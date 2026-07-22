@@ -1,6 +1,6 @@
 {
   "name": "rapier-on-worker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Free-running physics-in-a-Web-Worker harness: fixed-timestep loop, transferable frame-buffer pool, epoch-guarded layout changes. Bring your own simulation (built for Rapier; engine-agnostic).",
   "type": "module",
   "main": "./dist/index.js",

@@ -88,11 +88,15 @@ export function createSimClient<TInit, TInput = never, TCommand = never, TLayout
 
   worker.onmessage = (event: { data: unknown }) => {
     if (terminated) return
-    const msg = event.data as WorkerToMain<TLayout, TExtra>
+    const msg = event.data as WorkerToMain<TLayout, TExtra> | null
+    if (!msg || typeof msg !== 'object') return // symmetric with the worker's guard
     if (msg.type === 'READY') {
       isReady = true
       for (const command of preReadyCommands.splice(0)) post({ type: 'COMMAND', command })
-      if (desiredRunning ?? autoStart) post({ type: 'START' })
+      // Explicitly drive the pump to the wanted state (not just START-if-wanted):
+      // when re-attaching to a kept worker whose pump the previous client left
+      // running, a new client that does NOT want it running must send STOP.
+      post({ type: (desiredRunning ?? autoStart) ? 'START' : 'STOP' })
       options.onReady?.()
     } else if (msg.type === 'LAYOUT') {
       layout = msg.layout
@@ -165,6 +169,10 @@ export function createSimClient<TInit, TInput = never, TCommand = never, TLayout
       // forever into an inert client. Harmless for real Workers — the post
       // just precedes the termination.
       post({ type: 'STOP' })
+      // Detach the handler so its closure (which captures onFrame → the render
+      // scene) is released, and a port-backed host that outlives this client
+      // can't call a stale handler.
+      worker.onmessage = null
       worker.terminate?.()
     },
   }

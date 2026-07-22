@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.1
+
+Stability fixes from a multi-agent audit:
+
+- **Pool starvation on a post throw (the important one).** `publish()` returned
+  the popped frame buffer to the pool when `fillFrame` threw, but not when the
+  `postMessage` itself threw — a duplicate transfer buffer (a sim that lists
+  `out.buffer`, which is the frame buffer) or a non-cloneable `extra` leaked one
+  buffer per bad tick and starved the pool for good, silently freezing the
+  render. The post is now inside the same guard, and the transfer list drops any
+  entry that is the frame buffer.
+- `terminate()` nulls `worker.onmessage`, releasing the handler closure (which
+  captures `onFrame` → the render scene) and preventing a stale call on a
+  port-backed host that outlives the client.
+- The client message handler ignores null / non-object messages, symmetric with
+  the worker.
+- A sim factory that returns a malformed setup (e.g. a forgotten `return`) now
+  posts `ERROR` instead of hanging the client forever.
+- On `READY`, the client drives the pump explicitly to the wanted state
+  (`START` or `STOP`), so a second client re-attaching to a kept worker whose
+  pump the previous client left running can stop it.
+- README: removed a phantom `.order` field from the client-API note.
+
 ## 0.1.0
 
 Initial release — the harness extracted from the Burr and Burton advisory

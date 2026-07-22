@@ -187,9 +187,10 @@ add that package to `optimizeDeps.exclude` — not needed for this one.
   terminate }`. Pass all five type arguments explicitly (as in the quickstart):
   `TInput`/`TCommand` can't be inferred from the options and default to
   `never`, so an inference-only call site fails loudly instead of silently
-  accepting anything. `layout()` is null until the first LAYOUT arrives —
-  guard early frames (`client.layout()?.order ?? []`). One client per worker:
-  the client owns `onmessage`.
+  accepting anything. `layout()` is your app-defined `TLayout` (or null until
+  the first LAYOUT arrives) — guard early frames (`if (!client.layout())
+  return`) before reading its fields. One client per worker: the client owns
+  `onmessage`.
 - `WorkerSim` — your contract: `command`, `beginTick`, `step`, `fillFrame`,
   `onStart?`.
 - `steppedClock(step, { fixedDt, maxSubsteps, spiralClamp })` — the fixed-step

@@ -80,19 +80,24 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
       freePool.push(buf)
       return
     }
-    // A fillFrame throw must not leak the popped buffer — put it back and let
-    // the error propagate (tick's finally keeps the pump alive).
-    let fill
+    // A throw ANYWHERE here — fillFrame OR the post (a bad transfer list, a
+    // non-cloneable extra) — must not leak the popped buffer: return it to the
+    // pool and rethrow (tick's finally keeps the pump alive). Otherwise one
+    // buffer leaks per failing tick and the pool starves for good after
+    // poolSize ticks, permanently freezing the render.
     try {
-      fill = sim.fillFrame(new Float32Array(buf))
+      const fill = sim.fillFrame(new Float32Array(buf))
+      seq += 1
+      // De-dupe the transfer list: a sim that lists out.buffer (=== buf, since
+      // out wraps buf) would otherwise make postMessage throw DataCloneError on
+      // the duplicate ArrayBuffer.
+      const transfer: Transferable[] = [buf]
+      if (fill?.transfer) for (const t of fill.transfer) if (t !== buf) transfer.push(t)
+      post({ type: 'FRAME', buf, extra: fill?.extra, seq, epoch }, transfer)
     } catch (err) {
       freePool.push(buf)
       throw err
     }
-    seq += 1
-    const transfer: Transferable[] = [buf]
-    if (fill?.transfer) transfer.push(...fill.transfer)
-    post({ type: 'FRAME', buf, extra: fill?.extra, seq, epoch }, transfer)
   }
 
   function tick(): void {
@@ -168,6 +173,14 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
             // client would hang pre-READY forever. Allow a retry INIT.
             initStarted = false
             post({ type: 'ERROR', message: err instanceof Error ? err.message : String(err) })
+            return
+          }
+          // A factory that forgot to `return` (or returned a malformed setup)
+          // would otherwise set sim=undefined, post READY, and hang the client
+          // forever (commands dropped, no frames). Fail loudly instead.
+          if (!setup || typeof setup.sim !== 'object' || setup.sim === null) {
+            initStarted = false
+            post({ type: 'ERROR', message: 'sim factory must return { sim, layout? }' })
             return
           }
           sim = setup.sim

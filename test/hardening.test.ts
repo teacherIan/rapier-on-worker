@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { attachSimWorker } from '../src/worker'
 import { createSimClient } from '../src/client'
+import type { SimFactory, WorkerSim } from '../src/sim'
 import { boot, createChannel, makeTestSim, type TestCommand, type TestExtra, type TestInput, type TestLayout } from './helpers'
 
 beforeEach(() => {
@@ -228,5 +229,64 @@ describe('teardown', () => {
     const steps = h.state.stepCount
     await vi.advanceTimersByTimeAsync(2000)
     expect(h.state.stepCount).toBe(steps) // worker is not free-running forever
+  })
+})
+
+describe('audit 0.1.1 regressions', () => {
+  it('a sim that lists the frame buffer in transfer does not starve the pool', async () => {
+    // The footgun: out wraps buf, so `transfer: [out.buffer]` duplicates the
+    // frame buffer the harness already transfers. Before the fix, postMessage
+    // threw DataCloneError, the popped buffer leaked, and after poolSize (3)
+    // ticks the pool starved and the render froze for good.
+    const { ports } = createChannel()
+    const [mainPort, workerPort] = ports
+    let floats = 0
+    const sim: WorkerSim<TestInput, TestCommand, TestLayout, TestExtra> = {
+      command(c) {
+        if (c.kind === 'grow') {
+          floats = c.floats
+          return { layout: { floats }, frameFloats: floats }
+        }
+        return null
+      },
+      beginTick() {},
+      step() {},
+      fillFrame(out) {
+        return { transfer: [out.buffer] } // duplicate of the frame buffer
+      },
+    }
+    attachSimWorker<null, TestInput, TestCommand, TestLayout, TestExtra>(workerPort, () => ({ sim }))
+    const frames: number[] = []
+    const client = createSimClient<null, TestInput, TestCommand, TestLayout, TestExtra>({
+      worker: mainPort,
+      init: null,
+      onFrame: (f) => frames.push(f.positions.length),
+    })
+    client.sendCommand({ kind: 'grow', floats: 2 })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(frames.length).toBeGreaterThan(10) // far past poolSize — no starvation
+  })
+
+  it('a factory that returns a malformed setup posts ERROR instead of hanging', async () => {
+    const { ports } = createChannel()
+    const [mainPort, workerPort] = ports
+    // A factory that forgot to `return { sim }` resolves to undefined.
+    const badFactory = (() => undefined) as unknown as SimFactory<null, TestInput, TestCommand, TestLayout, TestExtra>
+    attachSimWorker<null, TestInput, TestCommand, TestLayout, TestExtra>(workerPort, badFactory)
+    const errors: string[] = []
+    let ready = false
+    const client = createSimClient<null, TestInput, TestCommand, TestLayout, TestExtra>({
+      worker: mainPort,
+      init: null,
+      onReady: () => {
+        ready = true
+      },
+      onError: (m) => errors.push(m),
+      onFrame: () => {},
+    })
+    void client
+    await vi.advanceTimersByTimeAsync(100)
+    expect(ready).toBe(false)
+    expect(errors.length).toBe(1)
   })
 })
