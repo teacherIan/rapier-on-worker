@@ -1,0 +1,48 @@
+{
+  "name": "rapier-on-worker",
+  "version": "0.1.0",
+  "description": "Free-running physics-in-a-Web-Worker harness: fixed-timestep loop, transferable frame-buffer pool, epoch-guarded layout changes. Bring your own simulation (built for Rapier; engine-agnostic).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "rapier",
+    "physics",
+    "web-worker",
+    "worker",
+    "transferable",
+    "fixed-timestep",
+    "pixi",
+    "off-main-thread"
+  ],
+  "author": "Ian Malloy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teacherIan/rapier-on-worker.git"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
