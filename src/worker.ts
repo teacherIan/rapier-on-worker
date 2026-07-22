@@ -5,9 +5,9 @@
 // timestep loop (accumulator with substep + spiral caps), applies the latest
 // main-supplied INPUT each tick, steps your sim, and transfers ONE filled
 // frame buffer to main when the pool has a free buffer (latest-wins).
-import { steppedClock } from './clock'
-import { POOL_SIZE, type InputMsg, type MainToWorker, type WorkerToMain } from './protocol'
-import type { SimFactory, SimLayout, WorkerLike, WorkerSim } from './sim'
+import { steppedClock } from './clock.js'
+import { POOL_SIZE, type InputMsg, type MainToWorker, type WorkerToMain } from './protocol.js'
+import type { SimFactory, SimLayout, WorkerLike, WorkerSim } from './sim.js'
 
 export interface SimWorkerOptions {
   /** Sim timestep in seconds. Default 1/60. */
@@ -39,6 +39,7 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
   let initStarted = false
   let epoch = 0
   let frameFloats = 0
+  let lastLayout: SimLayout<TLayout> | null = null
   let seq = 0
 
   // --- free-run pump state ---
@@ -61,6 +62,7 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
   function announceLayout(l: SimLayout<TLayout>): void {
     epoch += 1
     frameFloats = l.frameFloats
+    lastLayout = l
     freePool = []
     poolValid = false
     post({ type: 'LAYOUT', layout: l.layout, frameFloats, epoch })
@@ -78,7 +80,15 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
       freePool.push(buf)
       return
     }
-    const fill = sim.fillFrame(new Float32Array(buf))
+    // A fillFrame throw must not leak the popped buffer — put it back and let
+    // the error propagate (tick's finally keeps the pump alive).
+    let fill
+    try {
+      fill = sim.fillFrame(new Float32Array(buf))
+    } catch (err) {
+      freePool.push(buf)
+      throw err
+    }
     seq += 1
     const transfer: Transferable[] = [buf]
     if (fill?.transfer) transfer.push(...fill.transfer)
@@ -91,17 +101,23 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
     const frameTime = (now - last) / 1000 // raw; the clock clamps to spiralClamp
     last = now
 
-    if (sim) {
-      const input = staged
-      sim.beginTick(input ? input.input : null, input ? input.epoch === epoch : false)
-      const steps = clock.pump(frameTime)
-      if (steps > 0 && poolValid && frameFloats > 0) publish()
+    // The re-arm lives in finally: a throw from the sim's beginTick/step/
+    // fillFrame surfaces as an uncaught worker error (visible), but must not
+    // kill the loop while `running` is still true — START would then be a
+    // no-op and the sim would be dead with no recovery path.
+    try {
+      if (sim) {
+        const input = staged
+        sim.beginTick(input ? input.input : null, input ? input.epoch === epoch : false)
+        const steps = clock.pump(frameTime)
+        if (steps > 0 && poolValid && frameFloats > 0) publish()
+      }
+      // No sim yet: skip the pump entirely (the clock banks nothing until the
+      // sim exists, so there's no runaway accumulator to reset). `last` still
+      // advanced above so the first real frame uses a normal delta.
+    } finally {
+      if (running) timer = setTimeout(tick, targetMs)
     }
-    // No sim yet: skip the pump entirely (the clock banks nothing until the sim
-    // exists, so there's no runaway accumulator to reset). `last` still advanced
-    // above so the first real frame uses a normal delta.
-
-    if (running) timer = setTimeout(tick, targetMs)
   }
 
   function startPump(): void {
@@ -109,8 +125,10 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
     running = true
     last = performance.now()
     clock.reset()
-    sim?.onStart?.()
+    // Arm the loop BEFORE the sim's onStart so a throwing onStart can't
+    // strand `running=true` with no timer.
     timer = setTimeout(tick, targetMs)
+    sim?.onStart?.()
   }
 
   function stopPump(): void {
@@ -127,10 +145,31 @@ export function attachSimWorker<TInit, TInput, TCommand, TLayout, TExtra>(
 
     switch (msg.type) {
       case 'INIT': {
-        if (initStarted) return
+        if (initStarted) {
+          // A second client attached to a kept worker re-INITs. Don't re-run
+          // the factory — replay READY (and the current layout, which bumps
+          // the epoch so the new client seeds a fresh pool) once the sim is
+          // up. A re-INIT while the first factory is still awaiting just
+          // rides the pending READY.
+          if (sim) {
+            post({ type: 'READY' })
+            if (lastLayout) announceLayout(lastLayout)
+          }
+          return
+        }
         initStarted = true
         void (async () => {
-          const setup = await factory(msg.init)
+          let setup
+          try {
+            setup = await factory(msg.init)
+          } catch (err) {
+            // Surface the failure — an unhandled worker rejection never
+            // reaches the parent Worker's error event, so without this the
+            // client would hang pre-READY forever. Allow a retry INIT.
+            initStarted = false
+            post({ type: 'ERROR', message: err instanceof Error ? err.message : String(err) })
+            return
+          }
           sim = setup.sim
           // If the pump was STARTed while the factory awaited (the client only
           // sends START after READY, so only exotic callers hit this), the sim

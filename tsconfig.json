@@ -10,6 +10,8 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "outDir": "dist"
   },
   "include": ["src", "test"]

@@ -17,3 +17,13 @@ app's production soft-body worker:
   setRunning, autoStart.
 - Deterministic end-to-end tests over an in-memory channel with real
   structuredClone transfer semantics and faked timers.
+- Hardening (from a 30-agent adversarial review of the initial extraction):
+  `.js` ESM specifiers so native Node / NodeNext consumers load the package;
+  `default` export condition for require(esm); throw-safe tick/publish
+  (re-arm in finally, no buffer leak), throw-safe onFrame (RETURN in
+  finally) and onLayout (pool seeds first); factory rejection surfaces as
+  ERROR + `onError` with retryable INIT; duplicate INIT replays READY +
+  layout instead of hanging a second client; `terminate()` posts STOP for
+  terminate-less hosts; `TInput`/`TCommand` default to `never` so
+  inference-only client call sites fail loudly; declaration maps + source
+  maps shipped; regression tests for every confirmed finding (27 total).

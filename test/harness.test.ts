@@ -1,129 +1,8 @@
-// End-to-end: both harness halves wired over an in-memory channel that uses
-// REAL structuredClone-with-transfer semantics (buffers detach at the sender,
-// exactly like a Worker boundary) and faked timers (the delivery hop and the
-// worker's free-run pump are both setTimeout-driven, so tests are fully
-// deterministic).
+// End-to-end: both harness halves wired over the in-memory channel from
+// helpers.ts (real structuredClone-with-transfer, faked timers).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createSimClient } from '../src/client'
-import type { FrameFill, SimLayout, WorkerLike, WorkerSim } from '../src/sim'
 import { attachSimWorker } from '../src/worker'
-
-interface TestInput {
-  v: number
-}
-type TestCommand = { kind: 'grow'; floats: number } | { kind: 'nudge' }
-interface TestLayout {
-  floats: number
-}
-interface TestExtra {
-  stepCount: number
-  radii: Float32Array
-}
-
-function createChannel(): [WorkerLike, WorkerLike] {
-  let closed = false
-  const make = (): WorkerLike & { _deliver?: never } => ({
-    postMessage: () => {},
-    onmessage: null,
-    terminate: () => {
-      closed = true
-    },
-  })
-  const a = make()
-  const b = make()
-  const wire = (from: WorkerLike, to: WorkerLike) => {
-    from.postMessage = (message: unknown, transfer?: Transferable[]) => {
-      if (closed) return
-      // Clone (and detach transferables) NOW, deliver on the next timer tick —
-      // faithful to a real postMessage.
-      const data = structuredClone(message, transfer ? { transfer } : undefined)
-      setTimeout(() => {
-        if (!closed) to.onmessage?.({ data })
-      }, 0)
-    }
-  }
-  wire(a, b)
-  wire(b, a)
-  return [a, b]
-}
-
-interface TestSimState {
-  stepCount: number
-  starts: number
-  beginTicks: Array<{ input: TestInput | null; epochOk: boolean }>
-  commands: TestCommand[]
-}
-
-function makeTestSim(): { sim: WorkerSim<TestInput, TestCommand, TestLayout, TestExtra>; state: TestSimState } {
-  const state: TestSimState = { stepCount: 0, starts: 0, beginTicks: [], commands: [] }
-  let floats = 0
-  const sim: WorkerSim<TestInput, TestCommand, TestLayout, TestExtra> = {
-    command(cmd): SimLayout<TestLayout> | null {
-      state.commands.push(cmd)
-      if (cmd.kind === 'grow') {
-        floats = cmd.floats
-        return { layout: { floats }, frameFloats: floats }
-      }
-      return null
-    },
-    beginTick(input, epochOk) {
-      state.beginTicks.push({ input, epochOk })
-    },
-    step() {
-      state.stepCount += 1
-    },
-    fillFrame(out): FrameFill<TestExtra> {
-      for (let i = 0; i < out.length; i += 1) out[i] = state.stepCount * 1000 + i
-      const radii = new Float32Array([state.stepCount])
-      return { extra: { stepCount: state.stepCount, radii }, transfer: [radii.buffer] }
-    },
-    onStart() {
-      state.starts += 1
-    },
-  }
-  return { sim, state }
-}
-
-interface Harness {
-  client: ReturnType<typeof createSimClient<{ w: number }, TestInput, TestCommand, TestLayout, TestExtra>>
-  state: TestSimState
-  frames: Array<{ positions: Float32Array; layout: TestLayout; extra: TestExtra | undefined }>
-  layouts: TestLayout[]
-  readyCount: () => number
-  mainPort: WorkerLike
-}
-
-function boot(opts: { autoStart?: boolean; factoryDelayMs?: number } = {}): Harness {
-  const [mainPort, workerPort] = createChannel()
-  const { sim, state } = makeTestSim()
-  attachSimWorker<{ w: number }, TestInput, TestCommand, TestLayout, TestExtra>(
-    workerPort,
-    opts.factoryDelayMs
-      ? (init) =>
-          new Promise((resolve) => setTimeout(() => resolve({ sim }), opts.factoryDelayMs)).then(() => {
-            expect(init.w).toBe(640)
-            return { sim }
-          })
-      : (init) => {
-          expect(init.w).toBe(640)
-          return { sim }
-        },
-  )
-  const frames: Harness['frames'] = []
-  const layouts: TestLayout[] = []
-  let ready = 0
-  const client = createSimClient<{ w: number }, TestInput, TestCommand, TestLayout, TestExtra>({
-    worker: mainPort,
-    init: { w: 640 },
-    autoStart: opts.autoStart,
-    onReady: () => {
-      ready += 1
-    },
-    onLayout: (l) => layouts.push(l),
-    onFrame: (f) => frames.push({ positions: f.positions.slice(), layout: f.layout, extra: f.extra }),
-  })
-  return { client, state, frames, layouts, readyCount: () => ready, mainPort }
-}
+import { boot, createChannel, makeTestSim, type TestCommand, type TestExtra, type TestInput, type TestLayout } from './helpers'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
@@ -165,9 +44,10 @@ describe('harness end-to-end', () => {
       expect(f.extra!.radii).toBeInstanceOf(Float32Array)
       expect(f.extra!.radii[0]).toBe(f.extra!.stepCount)
     }
-    // Frames are latest-wins montonic — extras' stepCounts strictly increase.
+    // Frames are latest-wins monotonic — extras' stepCounts strictly increase.
     const counts = h.frames.map((f) => f.extra!.stepCount)
     for (let i = 1; i < counts.length; i += 1) expect(counts[i]).toBeGreaterThan(counts[i - 1]!)
+    expect(h.channel.sunkErrors).toEqual([])
   })
 
   it('re-layouts cleanly: after a second grow, only new-shape frames are delivered', async () => {
@@ -258,7 +138,8 @@ describe('harness end-to-end', () => {
 
   it('worker withholds frames when the pool is seeded with wrong-size buffers (silent-truncate guard)', async () => {
     // Drive the worker raw (no client) so we can violate the contract.
-    const [mainPort, workerPort] = createChannel()
+    const { ports } = createChannel()
+    const [mainPort, workerPort] = ports
     const { sim } = makeTestSim()
     attachSimWorker<null, TestInput, TestCommand, TestLayout, TestExtra>(workerPort, () => ({ sim }))
     const received: Array<{ type: string }> = []

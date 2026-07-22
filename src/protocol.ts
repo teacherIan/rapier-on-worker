@@ -84,6 +84,13 @@ export interface ReadyMsg {
   type: 'READY'
 }
 
+/** The sim factory threw/rejected. READY will not follow; the worker resets
+ * so a retry INIT is possible. */
+export interface ErrorMsg {
+  type: 'ERROR'
+  message: string
+}
+
 /** The frame shape changed: here is the app-defined layout descriptor, the
  * new frame size in floats, and the new epoch. Main re-seeds the pool. */
 export interface LayoutMsg<TLayout> {
@@ -106,4 +113,4 @@ export interface FrameMsg<TExtra> {
   epoch: number
 }
 
-export type WorkerToMain<TLayout, TExtra> = ReadyMsg | LayoutMsg<TLayout> | FrameMsg<TExtra>
+export type WorkerToMain<TLayout, TExtra> = ReadyMsg | ErrorMsg | LayoutMsg<TLayout> | FrameMsg<TExtra>

@@ -38,8 +38,10 @@ onFrame(frame)        ◀─ FRAME ───   filled buffer, transferred
   worker-inside-a-dependency resolution pitfalls exist here.
 - **Epochs make layout changes safe.** When your sim's frame shape changes
   (bodies added/removed), the worker bumps an epoch, drops its pool, and
-  announces the new layout; the client re-seeds automatically. Frames, returns,
-  and inputs from the old epoch are dropped instead of mis-read.
+  announces the new layout; the client re-seeds automatically. Frames and
+  buffer returns from the old epoch are dropped instead of mis-read; a stale
+  input is still delivered, flagged `epochOk=false`, so your sim can keep its
+  layout-independent fields and ignore the positional ones.
 
 ## Install
 
@@ -156,6 +158,18 @@ generally let dedicated-worker timers run; call
 resume, the harness resets the accumulator (no catch-up burst) and calls your
 sim's `onStart` so input-delta baselines re-seed.
 
+**Selective pause (multiple worlds in one sim).** START/STOP is whole-worker.
+A sim hosting several independent worlds (four game lanes, say) that need
+per-world freezing should model that as an app command — `{ kind: 'freeze',
+world: 2 }` — and simply skip that world in `step`. That's the idiomatic
+bring-your-own-sim shape; don't reach for one worker per world just to pause
+them separately.
+
+**Factory failure.** If your factory throws or rejects (a WASM fetch on a bad
+network), the worker posts an ERROR and the client's `onError` fires — READY
+never comes, and a fresh client (or page retry) may re-INIT. Wire `onError`
+to your app's failure UI; without it the only trace is the worker console.
+
 **Vite dev note.** Because the worker file is *yours*, no special config is
 needed in the common case. If you ever see the worker fail to resolve in dev
 while depending on a package that itself contains `new Worker(...)` calls,
@@ -168,8 +182,14 @@ add that package to `optimizeDeps.exclude` — not needed for this one.
   Options: `fixedDt` (1/60), `targetMs` (16.7), `maxSubsteps` (2),
   `spiralClamp` (0.25), `poolSize` (3).
 - `createSimClient(options)` — main side. Options: `worker`, `init`,
-  `onFrame`, `onReady?`, `onLayout?`, `poolSize?`, `autoStart?` (true).
-  Returns `{ ready, layout, sendInput, sendCommand, setRunning, terminate }`.
+  `onFrame`, `onReady?`, `onLayout?`, `onError?`, `poolSize?`, `autoStart?`
+  (true). Returns `{ ready, layout, sendInput, sendCommand, setRunning,
+  terminate }`. Pass all five type arguments explicitly (as in the quickstart):
+  `TInput`/`TCommand` can't be inferred from the options and default to
+  `never`, so an inference-only call site fails loudly instead of silently
+  accepting anything. `layout()` is null until the first LAYOUT arrives —
+  guard early frames (`client.layout()?.order ?? []`). One client per worker:
+  the client owns `onmessage`.
 - `WorkerSim` — your contract: `command`, `beginTick`, `step`, `fillFrame`,
   `onStart?`.
 - `steppedClock(step, { fixedDt, maxSubsteps, spiralClamp })` — the fixed-step
