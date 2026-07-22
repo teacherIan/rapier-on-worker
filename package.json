@@ -24,7 +24,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "keywords": [
     "rapier",
